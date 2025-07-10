@@ -1,0 +1,54 @@
+{
+  "name": "@enymo/react-resource-hook-indexeddb",
+  "version": "0.0.0",
+  "description": "IndexedDB adapter for the react resource hook",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/index.d.mts",
+        "require": "./dist/index.d.ts"
+      },
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "tsup": {
+    "entry": [
+      "src/js/index.ts"
+    ],
+    "format": [
+      "esm",
+      "cjs"
+    ],
+    "dts": true
+  },
+  "files": [
+    "/dist"
+  ],
+  "scripts": {
+    "build": "tsup"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/enymo/react-resource-hook-indexeddb.git"
+  },
+  "author": "enymo GmbH",
+  "license": "MIT",
+  "devDependencies": {
+    "postcss": "^8.5.6",
+    "tsup": "^8.5.0",
+    "typescript": "^4.9.5"
+  },
+  "peerDependencies": {
+    "@enymo/react-resource-hook": "^5.0.0",
+    "react": ">=17.0.0"
+  },
+  "dependencies": {
+    "dexie": "^4.0.11",
+    "dexie-react-hooks": "^1.1.7",
+    "uuid": "^11.1.0"
+  }
+}
