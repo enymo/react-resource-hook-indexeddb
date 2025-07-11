@@ -29,6 +29,7 @@
     "/dist"
   ],
   "scripts": {
+    "dev": "tsup --watch",
     "build": "tsup"
   },
   "repository": {
@@ -43,12 +44,11 @@
     "typescript": "^4.9.5"
   },
   "peerDependencies": {
-    "@enymo/react-resource-hook": "^5.0.0",
+    "@enymo/react-resource-hook": "file:../react-resource-hook",
     "react": ">=17.0.0"
   },
   "dependencies": {
     "dexie": "^4.0.11",
-    "dexie-react-hooks": "^1.1.7",
-    "uuid": "^11.1.0"
+    "dexie-react-hooks": "^1.1.7"
   }
 }
