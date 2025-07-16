@@ -1,84 +1,170 @@
-import type { Delta, DeltaResourceBackendAdapter, Resource } from "@enymo/react-resource-hook";
-import Dexie, { EntityTable, Transaction } from "dexie";
-import { useLiveQuery } from "dexie-react-hooks";
-import { useCallback } from "react";
+import type { CacheResourceBackendAdapter, Resource } from "@enymo/react-resource-hook";
+import Dexie, { Table, Transaction } from "dexie";
 
 const methodNotSupported = () => {
     throw new Error("Method not supported");
 }
 
 export default function createIndexedDBResourceAdapter({
-    databaseName,
-    schema
+    databaseName
 }: {
-    databaseName: string,
+    databaseName: string
+}): CacheResourceBackendAdapter<{
     schema: {
         version: number,
-        schema: {[table: string]: string},
+        schema?: string,
         upgrade?: (trans: Transaction) => PromiseLike<any> | void
     }[]
-}): DeltaResourceBackendAdapter<{}, {}, never, never> {
+}, {}, never> {
     const db = new Dexie(databaseName) as Dexie & {
-        [table: string]: EntityTable<Resource, "id">
+        [resource: string]: Table<{
+            id: Resource["id"],
+            target: "local" | "remote",
+            resource: Resource | null
+        }, ["local" | "remote", string | number]>
     };
-    const deltaDb = new Dexie(`${databaseName}--deltas`) as Dexie & {
-        deltas: EntityTable<Delta<Resource> & {
-            resource: string
-        }, any>
-    };
-    
-    deltaDb.version(1).stores({
-        deltas: "[resource+id]"
-    });
 
-    for (const entry of schema) {
-        const version = db.version(entry.version).stores(entry.schema);
-        if (entry.upgrade !== undefined) {
-            version.upgrade(entry.upgrade);
+    return (resource, {
+        schema = []
+    }, cache) => {
+        if (schema.length > 0) {
+            for (const entry of schema) {
+                const version = db.version(entry.version).stores({
+                    [resource]: `[target+id],id${entry.schema?.split(",").map(part => `,resource.${part.trim()}`).join("") ?? ""}`
+                })
+                if (entry.upgrade) {
+                    version.upgrade(entry.upgrade);
+                }
+            }
+        }
+        else {
+            db.version(1).stores({
+                [resource]: "[target+id],id"
+            });
+        }
+
+        return {
+            actionHook: () => {
+                return {
+                    store: async data => {
+                        const promises = [
+                            db[resource].add({
+                                id: data.id,
+                                resource: data,
+                                target: "local"
+                            })
+                        ];
+                        if (cache) {
+                            promises.push(db[resource].add({
+                                id: data.id,
+                                resource: null,
+                                target: "remote"
+                            }))
+                        }
+                        await Promise.all(promises);
+                        return data;               
+                    },
+                    batchStore: async data => {
+                        await Promise.all(data.flatMap(item => {
+                            const promises = [
+                                db[resource].add({
+                                    id: item.id,
+                                    resource: item,
+                                    target: "local"
+                                })
+                            ];
+                            if (cache) {
+                                promises.push(db[resource].add({
+                                    id: item.id,
+                                    resource: null,
+                                    target: "remote"
+                                }));
+                            }
+                            return promises
+                        }));
+                        return data;
+                    },
+                    update: async (id, data) => {
+                        if (cache && await db[resource].get(["remote", id]) === undefined) {
+                            await db[resource].add({
+                                id,
+                                target: "remote",
+                                resource: (await db[resource].get(["local", id]))!.resource
+                            })
+                        }
+                        await db[resource].update(["local", id!], {
+                            target: "local",
+                            ...Object.fromEntries(Object.entries(data).map(([key, value]) => [`resource.${key}`, value]))
+                        });
+                        return (await  db[resource].get(["local", id!]))!.resource as any;
+                    },
+                    batchUpdate: async data => {
+                        return Promise.all(data.map(async item => {
+                            const {id, ...rest} = item;
+                            if (cache && await db[resource].get(["remote", id]) === undefined) {
+                                await db[resource].add({
+                                    id,
+                                    target: "remote",
+                                    resource: (await db[resource].get(["local", id]))!.resource
+                                })
+                            }
+                            await db[resource].update(["local", id!], {
+                                target: "local",
+                                ...Object.fromEntries(Object.entries(rest).map(([key, value]) => [`resource.${key}`, value]))
+                            });
+                            return (await db[resource].get(["local", id]))!.resource as any;
+                        }));
+                    },
+                    destroy: async id => {
+                        if (cache && await db[resource].get(["remote", id]) === undefined) {
+                            await db[resource].add({
+                                id,
+                                target: "remote",
+                                resource: (await db[resource].get(["local", id]))!.resource
+                            })
+                        }
+                        await db[resource].delete(["local", id!])
+                    },
+                    batchDestroy: async ids => {
+                        await Promise.all(ids.map(id => db[resource].delete(["local", id!])))
+                    },
+                    query: methodNotSupported,
+                    refresh: async id => ({
+                        data: id !== undefined ? (await db[resource].get(["local", id]))?.resource : (await db[resource].where({target: "local"}).toArray()).map(item => item.resource) as any,
+                        meta: undefined as any,
+                        error: null
+                    }),
+                    getCache: async () => {
+                        const map = new Map<Resource["id"], {
+                            id: Resource["id"],
+                            local: Resource | null,
+                            remote?: Resource | null
+                        }>;
+
+                        for (const entry of await db[resource].toArray()) {
+                            if (!map.has(entry.id)) {
+                                map.set(entry.id, {
+                                    id: entry.id,
+                                    local: null,
+                                    [entry.target]: entry.resource,
+                                });
+                            }
+                            else {
+                                map.get(entry.id)![entry.target] = entry.resource;
+                            }
+                        }
+
+                        return [...map.values()] as any;
+                    },
+                    sync: async (...ids) => {
+                        await Promise.all(ids.map(id => {
+                            db[resource].delete(["remote", id!])
+                        }))
+                    },
+                    addOfflineListener: () => () => undefined
+                }
+            },
+            eventHook: () => {}
         }
     }
-
-    return resource => ({
-        actionHook: () => ({
-            store: useCallback(async data => {
-                await db[resource].add(data);
-                return data;               
-            }, [resource]),
-            batchStore: useCallback(async data => {
-                await Promise.all(data.map(item => db[resource].add(item)));
-                return data;
-            }, [resource]),
-            update: useCallback(async (id, data) => {
-                await db[resource].update(id, data);
-                return db[resource].get(id) as any;
-            }, [resource]),
-            batchUpdate: useCallback(async data => {
-                await Promise.all(data.map(item => {
-                    const {id, ...rest} = item;
-                    return db[resource].update(id, rest);
-                }));
-                return db[resource].where("id").anyOf(data.map(item => item.id)).toArray() as any;
-            }, [resource]),
-            destroy: useCallback(async id => {
-                await db[resource].delete(id)
-            }, [resource]),
-            batchDestroy: useCallback(async ids => {
-                await Promise.all(ids.map(id => db[resource].delete(id)))
-            }, [resource]),
-            query: methodNotSupported,
-            refresh: useCallback(async id => ({
-                data: await (id !== undefined ? db[resource].get(id) : db[resource].toArray()) as any,
-                meta: undefined as any,
-                error: null
-            }), [resource]),
-            deltas: useLiveQuery(() => deltaDb.deltas.where("resource").equals(resource).toArray() as any, [resource]),
-            writeDelta: useCallback(delta => deltaDb.deltas.put({
-                ...delta,
-                resource
-            }), [resource]),
-            flushDelta: useCallback(id => deltaDb.deltas.delete([resource, id]), [resource]),
-            offline: false
-        }),
-        eventHook: () => {}
-    })
 }
