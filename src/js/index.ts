@@ -19,9 +19,10 @@ export default function createIndexedDBResourceAdapter({
     const db = new Dexie(databaseName) as Dexie & {
         [resource: string]: Table<{
             id: Resource["id"],
+            key: string,
             target: "local" | "remote",
             resource: Resource | null
-        }, ["local" | "remote", string | number]>
+        }, [string, "local" | "remote", string | number]>
     };
 
     return (resource, {
@@ -30,7 +31,7 @@ export default function createIndexedDBResourceAdapter({
         if (schema.length > 0) {
             for (const entry of schema) {
                 const version = db.version(entry.version).stores({
-                    [resource]: `[target+id],id${entry.schema?.split(",").map(part => `,resource.${part.trim()}`).join("") ?? ""}`
+                    [resource]: `[key+target+id],id${entry.schema?.split(",").map(part => `,resource.${part.trim()}`).join("") ?? ""}`
                 })
                 if (entry.upgrade) {
                     version.upgrade(entry.upgrade);
@@ -39,16 +40,18 @@ export default function createIndexedDBResourceAdapter({
         }
         else {
             db.version(1).stores({
-                [resource]: "[target+id],id"
+                [resource]: "[key+target+id],id"
             });
         }
 
         return {
-            actionHook: () => {
+            actionHook: ({}, params) => {
+                const key = JSON.stringify(params);
                 return {
                     store: async data => {
                         const promises = [
                             db[resource].add({
+                                key,
                                 id: data.id,
                                 resource: data,
                                 target: "local"
@@ -56,6 +59,7 @@ export default function createIndexedDBResourceAdapter({
                         ];
                         if (cache) {
                             promises.push(db[resource].add({
+                                key,
                                 id: data.id,
                                 resource: null,
                                 target: "remote"
@@ -68,6 +72,7 @@ export default function createIndexedDBResourceAdapter({
                         await Promise.all(data.flatMap(item => {
                             const promises = [
                                 db[resource].add({
+                                    key,
                                     id: item.id,
                                     resource: item,
                                     target: "local"
@@ -75,6 +80,7 @@ export default function createIndexedDBResourceAdapter({
                             ];
                             if (cache) {
                                 promises.push(db[resource].add({
+                                    key,
                                     id: item.id,
                                     resource: null,
                                     target: "remote"
@@ -85,15 +91,15 @@ export default function createIndexedDBResourceAdapter({
                         return data;
                     },
                     update: async (id, data) => {
-                        if (cache && await db[resource].get(["remote", id]) === undefined) {
+                        if (cache && await db[resource].get([key, "remote", id]) === undefined) {
                             await db[resource].add({
+                                key,
                                 id,
                                 target: "remote",
-                                resource: (await db[resource].get(["local", id]))!.resource
+                                resource: (await db[resource].get([key, "local", id]))!.resource
                             })
                         }
-                        await db[resource].update(["local", id!], {
-                            target: "local",
+                        await db[resource].update([key, "local", id!], {
                             ...Object.fromEntries(Object.entries(data).map(([key, value]) => [`resource.${key}`, value]))
                         });
                         return (await  db[resource].get(["local", id!]))!.resource as any;
@@ -101,36 +107,48 @@ export default function createIndexedDBResourceAdapter({
                     batchUpdate: async data => {
                         return Promise.all(data.map(async item => {
                             const {id, ...rest} = item;
-                            if (cache && await db[resource].get(["remote", id]) === undefined) {
+                            if (cache && await db[resource].get([key, "remote", id]) === undefined) {
                                 await db[resource].add({
+                                    key,
                                     id,
                                     target: "remote",
-                                    resource: (await db[resource].get(["local", id]))!.resource
+                                    resource: (await db[resource].get([key, "local", id]))!.resource
                                 })
                             }
-                            await db[resource].update(["local", id!], {
+                            await db[resource].update([key, "local", id!], {
                                 target: "local",
                                 ...Object.fromEntries(Object.entries(rest).map(([key, value]) => [`resource.${key}`, value]))
                             });
-                            return (await db[resource].get(["local", id]))!.resource as any;
+                            return (await db[resource].get([key, "local", id]))!.resource as any;
                         }));
                     },
                     destroy: async id => {
-                        if (cache && await db[resource].get(["remote", id]) === undefined) {
+                        if (cache && await db[resource].get([key, "remote", id]) === undefined) {
                             await db[resource].add({
+                                key,
                                 id,
                                 target: "remote",
-                                resource: (await db[resource].get(["local", id]))!.resource
+                                resource: (await db[resource].get([key, "local", id]))!.resource
                             })
                         }
-                        await db[resource].delete(["local", id!])
+                        await db[resource].delete([key, "local", id!])
                     },
                     batchDestroy: async ids => {
-                        await Promise.all(ids.map(id => db[resource].delete(["local", id!])))
+                        await Promise.all(ids.map(async id => {
+                            if (cache && await db[resource].get([key, "remote", id]) === undefined) {
+                                await db[resource].add({
+                                    key,
+                                    id,
+                                    target: "remote",
+                                    resource: (await db[resource].get([key, "local", id]))!.resource
+                                })
+                            }
+                            await db[resource].delete([key, "local", id!])
+                        }))
                     },
                     query: methodNotSupported,
                     refresh: async id => ({
-                        data: id !== undefined ? (await db[resource].get(["local", id]))?.resource : (await db[resource].where({target: "local"}).toArray()).map(item => item.resource) as any,
+                        data: id !== undefined ? (await db[resource].get([key, "local", id]))?.resource : (await db[resource].where({target: "local"}).toArray()).map(item => item.resource) as any,
                         meta: undefined as any,
                         error: null
                     }),
@@ -158,7 +176,7 @@ export default function createIndexedDBResourceAdapter({
                     },
                     sync: async (...ids) => {
                         await Promise.all(ids.map(id => {
-                            db[resource].delete(["remote", id!])
+                            db[resource].delete([key, "remote", id!])
                         }))
                     },
                     addOfflineListener: () => () => undefined

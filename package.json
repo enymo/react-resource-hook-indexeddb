@@ -48,7 +48,6 @@
     "react": ">=17.0.0"
   },
   "dependencies": {
-    "dexie": "^4.0.11",
-    "dexie-react-hooks": "^1.1.7"
+    "dexie": "^4.0.11"
   }
 }
